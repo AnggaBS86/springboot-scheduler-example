@@ -5,6 +5,7 @@ import com.angga.birthdayscheduler.model.User;
 import com.angga.birthdayscheduler.model.UserBirthdayLog;
 import com.angga.birthdayscheduler.services.UserBirthdayLogService;
 import com.angga.birthdayscheduler.services.UserService;
+import org.jetbrains.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -32,13 +33,14 @@ public class ScheduledTasks {
     private UserBirthdayLogService userBirthdayLogService;
 
     private final String hookbinUrl = "https://hookb.in/jePWmNGJqdi9dlMMmJL6";
+    private final String timeToSent = "01";
 
-    //@Scheduled(fixedRate = 5000) --> for debugging only
-
-    //Every day at 9am
-    @Scheduled(cron = "0 0 9 * * *")
+    @Scheduled(fixedRate = 1800)
     public void reportCurrentTime() {
-        List<User> users = userService.findByBirthdayDate("2022-04-06");
+
+        Date dateNow = new Date();
+        DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
+        List<User> users = userService.findByBirthdayDate(dateFormat.format(dateNow));
 
         Observable<User> observable = Observable.from(users);
         observable
@@ -46,32 +48,72 @@ public class ScheduledTasks {
                     try {
                         throw new Exception("Error occured " + s.getCause());
                     } catch (Exception e) {
+                        this.doObservableProcess(users);
                         e.printStackTrace();
                     }
                 })
                 .doOnCompleted(() -> System.out.println("Process completed!"))
-                .subscribe(user -> {
-                    String timezone = getTimezone(user) != null ? getTimezone(user) : "Asia/Jakarta";
-                    Date date = new Date();
-                    DateFormat df = new SimpleDateFormat("yyyy-MM-dd");
-                    df.setTimeZone(TimeZone.getTimeZone(timezone));
+                .subscribe(user -> this.processBirthdayScheduler(user));
+    }
 
-                    System.out.println("Date and time : " + df.format(date));
+    private void doObservableProcess(List<User> users) {
+        Observable<User> observable = Observable.from(users);
+        observable
+                .doOnError(s -> {
+                    try {
+                        throw new Exception("Error occured " + s.getCause());
+                    } catch (Exception e) {
 
-                    if (this.isCongratulationSent(user)) {
-                        System.out.println("Birthday gift for this year already sent");
-                    } else {
-                        System.out.println("Sending the gift...");
-
-                        try {
-                            this.handleHookbinData();
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-
-                        this.handleBirthday(user, df.format(date));
+                        e.printStackTrace();
                     }
-                });
+                })
+                .doOnCompleted(() -> System.out.println("Process completed!"))
+                .subscribe(user -> this.processBirthdayScheduler(user));
+    }
+
+    /**
+     * Main process for birthday scheduler
+     *
+     * @param user
+     *
+     * @return void
+     */
+    private void processBirthdayScheduler(User user) {
+        String timezone = getTimezone(user) != null ? getTimezone(user) : "Asia/Jakarta";
+        Date date = new Date();
+        DateFormat df = new SimpleDateFormat("HH");
+        df.setTimeZone(TimeZone.getTimeZone(timezone));
+        String time = df.format(date);
+        System.out.println("Time : " + df.format(date));
+
+        //When the localtime is 09.00 ~ AM --> so sending the gift!
+        if (time.equalsIgnoreCase(this.timeToSent)) {
+            if (this.isCongratulationSent(user)) {
+                System.out.println("Birthday gift for this year already sent");
+            } else {
+
+                System.out.println("Sending the gift...");
+
+                if (this.handleBirthday(user)) {
+                    try {
+                        this.handleHookbinData();
+                    } catch (IOException e) {
+                        this.buildHookbinProcess();
+                    }
+                } else {
+                    //If failed --> return once again for sending the
+                    this.handleBirthday(user);
+                }
+            }
+        }
+    }
+
+    private void buildHookbinProcess() {
+        try {
+            this.handleHookbinData();
+        } catch (IOException e) {
+            buildHookbinProcess();
+        }
     }
 
     private boolean isCongratulationSent(User user) {
@@ -102,7 +144,7 @@ public class ScheduledTasks {
 
         BufferedReader br = new BufferedReader(new InputStreamReader(urlc
                 .getInputStream()));
-        String l = null;
+        String l;
         while ((l = br.readLine()) != null) {
             System.out.println(l);
         }
@@ -110,8 +152,17 @@ public class ScheduledTasks {
         br.close();
     }
 
-    private void handleBirthday(User user, String currentDate) {
+    private boolean handleBirthday(User user) {
         Date date = new Date();
+        DateFormat df = new SimpleDateFormat("yyyy-MM-dd");
+        df.setTimeZone(TimeZone.getTimeZone("Asia/Jakarta"));
+
+        UserBirthdayLog userBirthdayLog = this.buildUserBirthdayLog(user, date);
+
+        return userBirthdayLogService.store(userBirthdayLog);
+    }
+
+    private UserBirthdayLog buildUserBirthdayLog(User user, Date date) {
         DateFormat df = new SimpleDateFormat("yyyy-MM-dd");
         df.setTimeZone(TimeZone.getTimeZone("Asia/Jakarta"));
 
@@ -121,14 +172,10 @@ public class ScheduledTasks {
         userBirthdayLog.setCreatedAt(df.format(date));
         userBirthdayLog.setUpdatedAt(df.format(date));
 
-        boolean store = userBirthdayLogService.store(userBirthdayLog);
-        if (store) {
-            System.out.println("Store to users_birthday_log success!");
-        } else {
-            System.err.println("Store to users_birthday_log failed!");
-        }
+        return userBirthdayLog;
     }
 
+    @Nullable
     private String getTimezone(User user) {
         String[] location = user.getLocation().split(",");
 
@@ -142,7 +189,6 @@ public class ScheduledTasks {
                     Double.parseDouble(latitude)
             );
         }
-
         return null;
     }
 }
